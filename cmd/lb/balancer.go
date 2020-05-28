@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/roman-mazur/design-practice-3-template/httptools"
@@ -14,15 +17,15 @@ import (
 )
 
 var (
-	port = flag.Int("port", 8090, "load balancer port")
+	port       = flag.Int("port", 8090, "load balancer port")
 	timeoutSec = flag.Int("timeout-sec", 3, "request timeout time in seconds")
-	https = flag.Bool("https", false, "whether backends support HTTPs")
+	https      = flag.Bool("https", false, "whether backends support HTTPs")
 
 	traceEnabled = flag.Bool("trace", false, "whether to include tracing information into responses")
 )
 
 var (
-	timeout = time.Duration(*timeoutSec) * time.Second
+	timeout     = time.Duration(*timeoutSec) * time.Second
 	serversPool = []string{
 		"server1:8080",
 		"server2:8080",
@@ -83,10 +86,41 @@ func forward(dst string, rw http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 }
+func findServer(index int, availableAnyServer bool) (int, error, bool) {
+
+	minTraffic := trafficOfServer(serversPool[0])
+	for i := 1; i < len(serversPool); i++ {
+		currTraffic := trafficOfServer(serversPool[i])
+		if health(serversPool[i]) && currTraffic <= minTraffic {
+			index = i
+			minTraffic = currTraffic
+			availableAnyServer = true
+		}
+	}
+	if availableAnyServer == false {
+		return 0, errors.New("No servers available"), false
+	}
+	return index, nil, true
+}
+
+func trafficOfServer(dst string) int {
+	ctx, _ := context.WithTimeout(context.Background(), timeout)
+	req, _ := http.NewRequestWithContext(ctx, "GET",
+		fmt.Sprintf("%s://%s/trafficOfServer", scheme(), dst), nil)
+	resp, _ := http.DefaultClient.Do(req)
+	respBuf := new(bytes.Buffer)
+	respBuf.ReadFrom(resp.Body)
+	respString := string(respBuf.Bytes())
+	respInt, _ := strconv.Atoi(respString)
+	return respInt
+
+}
 
 func main() {
 	flag.Parse()
-
+	availableAnyServer := false
+	var err error = nil
+	index := 0
 	// TODO: Використовуйте дані про стан сервреа, щоб підтримувати список тих серверів, яким можна відправляти ззапит.
 	for _, server := range serversPool {
 		server := server
@@ -99,11 +133,39 @@ func main() {
 
 	frontend := httptools.CreateServer(*port, http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		// TODO: Рееалізуйте свій алгоритм балансувальника.
-		forward(serversPool[0], rw, r)
+		index, err, availableAnyServer = findServer(index, availableAnyServer)
+		if err != nil && availableAnyServer == false {
+			log.Printf("Errors: %s", err.Error())
+			rw.WriteHeader(http.StatusInternalServerError)
+			rw.Write([]byte(err.Error()))
+		} else {
+			forward(serversPool[index], rw, r)
+		}
+
+		availableAnyServer = false
+		err = nil
 	}))
 
 	log.Println("Starting load balancer...")
 	log.Printf("Tracing support enabled: %t", *traceEnabled)
 	frontend.Start()
 	signal.WaitForTerminationSignal()
+}
+
+// function for testing
+func testBalancer(testTraffic [3]int, testHealth [3]bool) (int, error, bool) {
+	availableAnyServerTest := false
+	index := 0
+	minTraffic := 2000
+	for i := 0; i < len(testTraffic); i++ {
+		if testHealth[i] && (testTraffic[i] <= minTraffic) {
+			index = i
+			minTraffic = testTraffic[i]
+			availableAnyServerTest = true
+		}
+	}
+	if !availableAnyServerTest {
+		return 0, errors.New("No servers available"), false
+	}
+	return index, nil, true
 }
