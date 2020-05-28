@@ -1,5 +1,4 @@
-module github.com/roman-mazur/design-practice-3-template
-
+module github.com/Encelad/laba3
 go 1.14
 
 require (
